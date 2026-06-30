@@ -15,14 +15,8 @@ const { fontFamily: playfairItalic } = loadPlayfair("italic", {
   subsets: ["latin"],
 });
 
-function resolveAsset(src: string): string {
-  if (src.startsWith("http://") || src.startsWith("https://") || src.startsWith("data:")) return src;
-  const clean = src.replace(/^file:\/\/\/?/, "");
-  if (clean.startsWith("/") || /^[A-Za-z]:[\\/]/.test(clean)) {
-    return `file:///${clean.replace(/\\/g, "/")}`;
-  }
-  return staticFile(clean);
-}
+import { resolveAsset as resolveAssetRaw } from "./lib/resolveAsset";
+const resolveAsset = (src: string) => resolveAssetRaw(src, staticFile);
 
 export interface Lyric {
   text: string;
