@@ -1146,6 +1146,56 @@ class VideoCompose(BaseTool):
         # overlays, and profile scaling for free.
         return True
 
+    def _resolve_audio_block(
+        self,
+        audio: dict[str, Any],
+        asset_lookup: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Transform an edit_decisions ``audio`` block into the shape the
+        Remotion compositions consume.
+
+        edit_decisions stores narration as ``narration.segments[].asset_id`` and
+        music as a flat ``music.asset_id`` with snake_case fades. The Explainer
+        composition's ``<Audio>`` instead reads ``audio.narration.src`` /
+        ``audio.music.src`` (resolved via ``resolveAsset``) with
+        ``fadeInSeconds`` / ``fadeOutSeconds`` / ``offsetSeconds``. Without this
+        transform the composition receives bare asset-ids, loads nothing, and
+        renders a SILENT track.
+
+        Unresolvable ids are deliberately left WITHOUT a ``src`` field so the
+        pre-render asset gate rejects them with a clear error rather than
+        silently producing silence.
+        """
+        if not isinstance(audio, dict):
+            return audio
+        out: dict[str, Any] = json.loads(json.dumps(audio))  # deep copy
+
+        # Narration: use the first segment's asset as the (full) narration track.
+        narration = out.get("narration")
+        if isinstance(narration, dict):
+            segments = narration.get("segments") or []
+            first_id = (
+                segments[0].get("asset_id") if segments else narration.get("asset_id")
+            )
+            asset = asset_lookup.get(first_id) if first_id else None
+            if asset and asset.get("path"):
+                narration["src"] = asset["path"]
+
+        # Music: flat asset_id + snake_case fades -> src + camelCase fields.
+        music = out.get("music")
+        if isinstance(music, dict):
+            asset = asset_lookup.get(music.get("asset_id"))
+            if asset and asset.get("path"):
+                music["src"] = asset["path"]
+            if "fade_in_seconds" in music:
+                music["fadeInSeconds"] = music["fade_in_seconds"]
+            if "fade_out_seconds" in music:
+                music["fadeOutSeconds"] = music["fade_out_seconds"]
+            if "offset_seconds" in music:
+                music["offsetSeconds"] = music["offset_seconds"]
+
+        return out
+
     def _pre_compose_validation(
         self,
         edit_decisions: dict[str, Any],
@@ -1304,6 +1354,30 @@ class VideoCompose(BaseTool):
                 resolved_cut["source"] = asset_lookup[source_id]["path"]
             resolved_cuts.append(resolved_cut)
 
+        # --- Asset-resolution gate ---
+        # Every cut.source must resolve to a real file (or a URL) before we
+        # spend minutes rendering. An unresolved id — e.g. a phantom "cta-card"
+        # the agent referenced but never materialised — otherwise 404s deep
+        # inside Remotion at frame N. Fail fast and name the offenders.
+        unresolved = []
+        for rc in resolved_cuts:
+            src = rc.get("source")
+            if not src:
+                continue  # text-card cuts legitimately have no source
+            if str(src).startswith(("http://", "https://")):
+                continue
+            if not Path(str(src)).exists():
+                unresolved.append(f"{rc.get('id', '?')}:{src}")
+        if unresolved:
+            return ToolResult(
+                success=False,
+                error=(
+                    "Unresolvable cut sources (not in asset_manifest and no file "
+                    "on disk): " + ", ".join(unresolved) + ". Every cut.source must "
+                    "map to a manifest asset id or an existing file before render."
+                ),
+            )
+
         # --- Pre-compose validation gate ---
         scene_plan = inputs.get("scene_plan")
         validation_block = self._pre_compose_validation(edit_decisions, resolved_cuts, scene_plan)
@@ -1363,8 +1437,16 @@ class VideoCompose(BaseTool):
 
         # --- Explicit Remotion path (render_runtime == 'remotion') ---
         if self._needs_remotion(resolved_cuts):
+            # Resolve the audio block's asset-ids -> src paths too. Cuts are
+            # resolved above; the audio block must be transformed separately or
+            # the composition's <Audio> gets bare ids and renders SILENT.
+            resolved_ed = dict(edit_decisions, cuts=resolved_cuts)
+            if isinstance(edit_decisions.get("audio"), dict):
+                resolved_ed["audio"] = self._resolve_audio_block(
+                    edit_decisions["audio"], asset_lookup
+                )
             remotion_inputs: dict[str, Any] = {
-                "edit_decisions": dict(edit_decisions, cuts=resolved_cuts),
+                "edit_decisions": resolved_ed,
                 "output_path": str(output_path),
             }
             if profile:
@@ -1651,15 +1733,52 @@ class VideoCompose(BaseTool):
         # Deep-copy props so we don't mutate the original
         props = json.loads(json.dumps(composition_data))
 
-        # Convert absolute file paths to file:// URIs for Remotion's
-        # Img and OffthreadVideo components
+        # Stage every referenced asset under a per-render public dir and rewrite
+        # references to public-dir-relative paths. Remotion's <OffthreadVideo>
+        # and <Audio> reject file:// URIs ("Can only download URLs starting with
+        # http:// or https://"); they only load assets served from the bundle's
+        # public dir via staticFile(). Absolute paths and file:// both fail, so
+        # we mirror the assets into --public-dir and pass relative paths — the
+        # same model _render_via_atelier already uses.
+        public_dir = output_path.parent / "_public"
+        public_dir.mkdir(parents=True, exist_ok=True)
+
+        def _stage(ref: str) -> str:
+            """Mirror an absolute/file:// asset into public_dir and return a
+            public-relative path. http(s) and already-relative refs pass through.
+            """
+            if not ref or ref.startswith(("http://", "https://")):
+                return ref
+            raw = ref[7:] if ref.startswith("file://") else ref
+            src = Path(raw)
+            if not src.is_absolute():
+                return ref  # already public-relative
+            # Preserve a <parent>/<name> layout so same-named files in different
+            # asset folders (video/s1.mp4 vs audio/s1.mp3) don't collide, and the
+            # composition's extension-based isImage/isVideo checks still work.
+            rel = Path(src.parent.name) / src.name
+            dest = public_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            # Must be a REAL file copy, not a symlink: Remotion copies the
+            # --public-dir into its webpack bundle and does NOT follow symlinks,
+            # so a symlinked asset 404s at frame 0. Replace any stale symlink
+            # from an earlier run, then copy the real bytes.
+            if dest.is_symlink():
+                dest.unlink()
+            if not dest.exists() and src.exists():
+                shutil.copy2(src, dest)
+            return rel.as_posix()
+
         for cut in props.get("cuts", []):
-            source = cut.get("source", "")
-            if source and not source.startswith(("http://", "https://", "file://")):
-                resolved = Path(source).resolve()
-                if resolved.exists():
-                    posix = resolved.as_posix()
-                    cut["source"] = f"file:///{posix}" if not posix.startswith("/") else f"file://{posix}"
+            if cut.get("source"):
+                cut["source"] = _stage(cut["source"])
+
+        audio_block = props.get("audio")
+        if isinstance(audio_block, dict):
+            for _layer in ("narration", "music"):
+                layer = audio_block.get(_layer)
+                if isinstance(layer, dict) and layer.get("src"):
+                    layer["src"] = _stage(layer["src"])
 
         # Build a custom themeConfig from the playbook's actual colors.
         # This ensures every video gets a unique visual identity derived
@@ -1715,12 +1834,17 @@ class VideoCompose(BaseTool):
             except (ImportError, ValueError):
                 pass
 
+        # Serve the staged assets to the headless browser (see _stage above).
+        cmd.append(f"--public-dir={public_dir}")
+
         try:
             # Invoke from inside the composer dir so npx can resolve the
             # local remotion binary via node_modules/.bin. Without this,
             # Windows npx cannot locate the CLI and returns "could not
             # determine executable to run".
-            self.run_command(cmd, timeout=600, cwd=composer_dir)
+            # 1800s (not 600s): a full ~40s/1212-frame reel renders in ~11.5 min
+            # at concurrency 2 on a 4-vCPU box; 600s killed it mid-encode.
+            self.run_command(cmd, timeout=1800, cwd=composer_dir)
         except Exception as e:
             return ToolResult(success=False, error=f"Remotion render failed: {e}")
         finally:
