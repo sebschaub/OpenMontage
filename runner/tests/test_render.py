@@ -45,3 +45,27 @@ def test_unmeasurable_audio_passes(tmp_path):
     res = render.ensure_final(ws, "instagram_reels", video_compose_factory=lambda: 1/0,
                               volume_check=lambda p: None)
     assert res.ok is True
+
+def test_prepare_audio_concatenates_multi_segment_narration(tmp_path):
+    calls = {}
+    def fake_concat(parts, out_path):
+        calls["parts"] = parts; calls["out"] = out_path
+    ed = {"audio": {"narration": {"segments": [
+            {"asset_id": "narration-s1", "start_seconds": 0},
+            {"asset_id": "narration-s2", "start_seconds": 5.2}]},
+          "music": {"asset_id": "music-bg"}}}
+    am = {"assets": [
+            {"id": "narration-s1", "type": "narration", "path": "/a/s1.mp3"},
+            {"id": "narration-s2", "type": "narration", "path": "/a/s2.mp3"},
+            {"id": "music-bg", "type": "music", "path": "/a/m.mp3"}]}
+    ed2, am2 = render._prepare_audio(str(tmp_path), ed, am, concat_fn=fake_concat)
+    assert calls["parts"] == [("/a/s1.mp3", 0), ("/a/s2.mp3", 5.2)]   # ordered, with offsets
+    assert calls["out"].endswith("assets/audio/narration_full.mp3")
+    assert ed2["audio"]["narration"]["segments"] == [{"asset_id": "narration-full", "start_seconds": 0}]
+    assert any(a["id"] == "narration-full" for a in am2["assets"])
+
+def test_prepare_audio_leaves_single_segment(tmp_path):
+    ed = {"audio": {"narration": {"segments": [{"asset_id": "narration-full", "start_seconds": 0}]}}}
+    am = {"assets": [{"id": "narration-full", "type": "narration", "path": "/a/n.mp3"}]}
+    ed2, am2 = render._prepare_audio(str(tmp_path), ed, am, concat_fn=lambda *a: 1/0)
+    assert ed2 is ed and am2 is am   # untouched, concat never called
