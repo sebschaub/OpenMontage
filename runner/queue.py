@@ -45,6 +45,10 @@ class JobQueue:
     def mark_failed(self, job_id, error):
         self._update(job_id, status="failed", error=error)
 
+    def requeue(self, job_id):
+        # back to pending for a fresh retry; attempts is preserved (claim_next bumps it)
+        self._update(job_id, status="pending", error=None)
+
     def _update(self, job_id, **fields):
         sets = ", ".join(f"{k}=?" for k in fields) + ", updated_at=?"
         with self._conn() as c:

@@ -23,6 +23,7 @@ def process_job(cfg, queue, job, deps):
     job_id = job["id"]; spec = job["spec"]
     ws = os.path.join(cfg.projects_dir, job_id)
     callback_url = spec.get("callbackUrl")
+    shutil.rmtree(ws, ignore_errors=True)   # fresh workspace for this attempt
     try:
         alias = spec["pipeline"]; p = pipelines.resolve(alias)
         profile = spec.get("mediaProfile") or p.default_profile
@@ -35,19 +36,26 @@ def process_job(cfg, queue, job, deps):
         rr = deps.ensure_final(ws, profile)
         if not rr.ok:
             err = (rr.error or "render failed") + "\n--agent log--\n" + (ar.log_tail or "")
-            queue.mark_failed(job_id, err[:4000])
-            _callback(cfg, deps, callback_url, job_id, "failed", spec, error=err[:1500])
+            _fail_or_retry(cfg, queue, job, ws, callback_url, spec, deps, err)
             return
         cost = cost_mod.total_cost(ar.cost_usd, rr.asset_manifest)
         video_url = deps.upload(cfg, rr.final_path, f"videos/{job_id}.mp4")
         queue.mark_done(job_id, cost, video_url)
         _callback(cfg, deps, callback_url, job_id, "done", spec, cost=cost, video_url=video_url)
-        # purge the workspace ONLY on success; a FAILED job's workspace is kept
-        # on disk so its artifacts/agent output can be diagnosed.
-        shutil.rmtree(ws, ignore_errors=True)
+        shutil.rmtree(ws, ignore_errors=True)   # purge only on success
     except Exception as e:
-        queue.mark_failed(job_id, f"runner error: {e}")
-        _callback(cfg, deps, callback_url, job_id, "failed", spec, error=str(e))
+        _fail_or_retry(cfg, queue, job, ws, callback_url, spec, deps, f"runner error: {e}")
+
+def _fail_or_retry(cfg, queue, job, ws, callback_url, spec, deps, error):
+    # Nondeterministic agent output means one bad run may render fine on a retry.
+    # Requeue while attempts remain (clean workspace for a fresh attempt); once
+    # exhausted, fail terminally and KEEP the workspace for diagnosis.
+    if job.get("attempts", 1) < cfg.max_attempts:
+        shutil.rmtree(ws, ignore_errors=True)
+        queue.requeue(job["id"])
+        return
+    queue.mark_failed(job["id"], error[:4000])
+    _callback(cfg, deps, callback_url, job["id"], "failed", spec, error=error[:1500])
 
 def _callback(cfg, deps, callback_url, job_id, status, spec, *, cost=None, video_url=None, error=None):
     if not callback_url:

@@ -24,3 +24,11 @@ def test_recover_orphans_requeues_under_max(tmp_path):
     q.claim_next()                                         # attempts=2
     q.recover_orphans(max_attempts=2)
     assert q.get("j")["status"] == "failed"
+
+def test_requeue_returns_to_pending_keeping_attempts(tmp_path):
+    q = JobQueue(str(tmp_path / "q.db"))
+    q.enqueue("j", "reel", None, {}); q.claim_next()      # running, attempts=1
+    q.requeue("j")
+    j = q.get("j")
+    assert j["status"] == "pending" and j["attempts"] == 1
+    assert q.claim_next()["id"] == "j"                    # claimable again

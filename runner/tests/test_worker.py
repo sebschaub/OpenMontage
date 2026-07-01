@@ -3,8 +3,9 @@ from runner import worker
 from runner.queue import JobQueue
 from runner.config import Config
 
-def _cfg(tmp): return Config("s",8088,1800,2,"","b","","","http://pub",
-                             str(tmp), str(tmp/"projects"), str(tmp/"q.db"))
+def _cfg(tmp, max_attempts=2):
+    return Config("s", 8088, 1800, max_attempts, "", "b", "", "", "http://pub",
+                  str(tmp), str(tmp / "projects"), str(tmp / "q.db"))
 
 class Deps:
     def __init__(self, tmp):
@@ -28,31 +29,38 @@ def test_process_job_success(tmp_path):
     job = q.get("j1")
     assert job["status"] == "done" and job["cost_usd"] == 0.7   # 0.5 agent + 0.2 media
     assert d.callbacks[0]["status"] == "done" and d.callbacks[0]["url"].endswith("j1.mp4")
-    assert not os.path.exists(os.path.join(cfg.projects_dir, "j1"))   # workspace purged
+    assert not os.path.exists(os.path.join(cfg.projects_dir, "j1"))   # purged on success
 
 def test_run_once_empty_returns_false(tmp_path):
     cfg = _cfg(tmp_path); q = JobQueue(cfg.db_path)
     assert worker.run_once(cfg, q, Deps(tmp_path)) is False
 
-def test_process_job_render_fail_marks_failed(tmp_path):
-    cfg = _cfg(tmp_path); q = JobQueue(cfg.db_path); d = Deps(tmp_path)
+def test_failure_requeues_while_attempts_remain(tmp_path):
+    cfg = _cfg(tmp_path, max_attempts=2); q = JobQueue(cfg.db_path); d = Deps(tmp_path)
     from runner.render import RenderResult
-    d.ensure_final = lambda ws, profile: RenderResult(False, None, {}, error="no render")
+    d.ensure_final = lambda ws, profile: RenderResult(False, None, {}, error="silent")
     q.enqueue("j2", "reel", None, {"pipeline": "reel", "callbackUrl": "https://b/cb",
               "budgetCapUsd": 2.0, "inputs": {}})
-    worker.run_once(cfg, q, d)
-    assert q.get("j2")["status"] == "failed"
-    assert d.callbacks[0]["status"] == "failed"
-    # a FAILED job's workspace is preserved on disk for diagnosis (not purged)
-    assert os.path.exists(os.path.join(cfg.projects_dir, "j2"))
+    worker.run_once(cfg, q, d)                 # attempt 1 of 2
+    assert q.get("j2")["status"] == "pending"  # requeued, not failed
+    assert d.callbacks == []                    # no terminal callback yet
+    assert not os.path.exists(os.path.join(cfg.projects_dir, "j2"))   # workspace cleaned for retry
 
-def test_process_job_bad_pipeline_fails_without_raising(tmp_path):
-    # An unknown/absent pipeline alias must NOT propagate out of run_once
-    # (it would crash the poll loop and strand the job as 'running'). It must
-    # be caught, marked failed, and reported via callback.
-    cfg = _cfg(tmp_path); q = JobQueue(cfg.db_path); d = Deps(tmp_path)
-    q.enqueue("j3", "bogus", None, {"pipeline": "bogus",
-              "callbackUrl": "https://b/cb", "inputs": {}})
-    assert worker.run_once(cfg, q, d) is True          # returns, does not raise
+def test_failure_is_terminal_at_max_attempts(tmp_path):
+    cfg = _cfg(tmp_path, max_attempts=1); q = JobQueue(cfg.db_path); d = Deps(tmp_path)
+    from runner.render import RenderResult
+    d.ensure_final = lambda ws, profile: RenderResult(False, None, {}, error="silent")
+    q.enqueue("j3", "reel", None, {"pipeline": "reel", "callbackUrl": "https://b/cb",
+              "budgetCapUsd": 2.0, "inputs": {}})
+    worker.run_once(cfg, q, d)                 # attempt 1 == max 1 -> terminal
     assert q.get("j3")["status"] == "failed"
+    assert d.callbacks[0]["status"] == "failed"
+    assert os.path.exists(os.path.join(cfg.projects_dir, "j3"))       # preserved for diagnosis
+
+def test_bad_pipeline_fails_without_raising(tmp_path):
+    cfg = _cfg(tmp_path, max_attempts=1); q = JobQueue(cfg.db_path); d = Deps(tmp_path)
+    q.enqueue("j4", "bogus", None, {"pipeline": "bogus",
+              "callbackUrl": "https://b/cb", "inputs": {}})
+    assert worker.run_once(cfg, q, d) is True   # returns, does not raise
+    assert q.get("j4")["status"] == "failed"
     assert d.callbacks[0]["status"] == "failed"
