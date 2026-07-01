@@ -1,7 +1,7 @@
 from runner import callback
 from runner.config import Config
 
-def _cfg(): return Config("sek",8088,1800,2,"","b","","","p","/o","/p","/tmp/q.db")
+def _cfg(): return Config("sek",8088,1800,2,"","b","","","p","/o","/p","/tmp/q.db", callback_secret="botsek")
 
 def test_send_posts_with_secret_and_returns_true():
     seen = {}
@@ -10,7 +10,7 @@ def test_send_posts_with_secret_and_returns_true():
         seen.update(url=url, json=json, headers=headers); return Resp()
     ok = callback.send(_cfg(), "https://b/cb", {"jobId": "j1", "status": "done"}, poster=poster)
     assert ok is True
-    assert seen["headers"]["X-Runner-Secret"] == "sek"
+    assert seen["headers"]["Authorization"] == "Bearer botsek"   # bot's Bearer scheme
     assert seen["json"]["jobId"] == "j1"
 
 def test_send_false_on_error():

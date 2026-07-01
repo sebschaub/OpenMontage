@@ -15,6 +15,7 @@ class Config:
     openmontage_dir: str
     projects_dir: str
     db_path: str
+    callback_secret: str = ""   # bot's BOT_API_SECRET — for the worker->bot callback (Bearer)
 
 def load() -> Config:
     secret = os.environ.get("RUNNER_SECRET")
@@ -34,4 +35,5 @@ def load() -> Config:
         openmontage_dir=om,
         projects_dir=os.path.join(om, "projects"),
         db_path=os.environ.get("RUNNER_DB", os.path.join(om, "runner", "runner.db")),
+        callback_secret=os.environ.get("BOT_API_SECRET", ""),
     )
