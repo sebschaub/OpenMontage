@@ -1,9 +1,7 @@
 import json, os, shutil
-from dataclasses import dataclass
 from runner import agent as agent_mod, render as render_mod, storage as storage_mod
 from runner import callback as callback_mod, cost as cost_mod, pipelines
 
-@dataclass
 class Deps:
     run_agent = staticmethod(agent_mod.run_agent)
     ensure_final = staticmethod(render_mod.ensure_final)
@@ -23,12 +21,12 @@ def run_once(cfg, queue, deps=None) -> bool:
 
 def process_job(cfg, queue, job, deps):
     job_id = job["id"]; spec = job["spec"]
-    alias = spec["pipeline"]; p = pipelines.resolve(alias)
-    profile = spec.get("mediaProfile") or p.default_profile
-    cap = spec.get("budgetCapUsd", 2.0)
     ws = os.path.join(cfg.projects_dir, job_id)
     callback_url = spec.get("callbackUrl")
     try:
+        alias = spec["pipeline"]; p = pipelines.resolve(alias)
+        profile = spec.get("mediaProfile") or p.default_profile
+        cap = spec.get("budgetCapUsd", 2.0)
         os.makedirs(ws, exist_ok=True)
         with open(os.path.join(ws, "brief.json"), "w") as f:
             json.dump(spec.get("inputs", {}), f)

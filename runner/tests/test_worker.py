@@ -43,3 +43,14 @@ def test_process_job_render_fail_marks_failed(tmp_path):
     worker.run_once(cfg, q, d)
     assert q.get("j2")["status"] == "failed"
     assert d.callbacks[0]["status"] == "failed"
+
+def test_process_job_bad_pipeline_fails_without_raising(tmp_path):
+    # An unknown/absent pipeline alias must NOT propagate out of run_once
+    # (it would crash the poll loop and strand the job as 'running'). It must
+    # be caught, marked failed, and reported via callback.
+    cfg = _cfg(tmp_path); q = JobQueue(cfg.db_path); d = Deps(tmp_path)
+    q.enqueue("j3", "bogus", None, {"pipeline": "bogus",
+              "callbackUrl": "https://b/cb", "inputs": {}})
+    assert worker.run_once(cfg, q, d) is True          # returns, does not raise
+    assert q.get("j3")["status"] == "failed"
+    assert d.callbacks[0]["status"] == "failed"
