@@ -20,3 +20,11 @@ def test_build_prompt_mentions_manifest_budget_and_stop_point():
     assert "edit_decisions" in p          # reel stops at edit_decisions (runner renders)
     p2 = pipelines.build_prompt("localization-dub", "/w/brief.json", "/w", "source", 2.0)
     assert "final.mp4" in p2               # dub runs through to final.mp4
+
+def test_build_prompt_bootstraps_agent_guide_and_asset_contract():
+    # The agent must be told to read AGENT_GUIDE.md (Rule Zero) and to emit the
+    # manifest-id asset convention — otherwise it improvises unresolvable sources.
+    p = pipelines.build_prompt("reel", "/w/brief.json", "/w", "instagram_reels", 2.0)
+    assert "AGENT_GUIDE" in p
+    assert "asset_manifest" in p and "cuts[].source" in p
+    assert "/w/artifacts" in p and "/w/assets" in p   # workspace-scoped output
