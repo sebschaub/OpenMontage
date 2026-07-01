@@ -43,6 +43,8 @@ def test_process_job_render_fail_marks_failed(tmp_path):
     worker.run_once(cfg, q, d)
     assert q.get("j2")["status"] == "failed"
     assert d.callbacks[0]["status"] == "failed"
+    # a FAILED job's workspace is preserved on disk for diagnosis (not purged)
+    assert os.path.exists(os.path.join(cfg.projects_dir, "j2"))
 
 def test_process_job_bad_pipeline_fails_without_raising(tmp_path):
     # An unknown/absent pipeline alias must NOT propagate out of run_once

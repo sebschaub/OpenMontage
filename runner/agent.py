@@ -11,7 +11,7 @@ class AgentResult:
 def run_agent(cfg, alias, workspace, brief_path, profile, budget_cap, timeout_sec, runner=subprocess.run):
     prompt = pipelines.build_prompt(alias, brief_path, workspace, profile, budget_cap)
     cmd = ["claude", "-p", prompt, "--permission-mode", "bypassPermissions",
-           "--output-format", "json"]
+           "--model", "sonnet", "--output-format", "json"]
     try:
         proc = runner(cmd, cwd=cfg.openmontage_dir, capture_output=True, text=True, timeout=timeout_sec)
     except subprocess.TimeoutExpired:

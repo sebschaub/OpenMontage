@@ -18,6 +18,8 @@ def test_run_agent_parses_cost_and_builds_command(tmp_path):
     assert res.ok is True and res.cost_usd == 0.91
     joined = " ".join(calls["cmd"])
     assert "claude" in joined and "--output-format" in joined and "bypassPermissions" in joined
+    # cost control: agent runs on Sonnet, not the session's default (Opus)
+    assert "--model" in calls["cmd"] and "sonnet" in calls["cmd"]
 
 def test_run_agent_flags_error(tmp_path):
     class R:

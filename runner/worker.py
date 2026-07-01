@@ -42,11 +42,12 @@ def process_job(cfg, queue, job, deps):
         video_url = deps.upload(cfg, rr.final_path, f"videos/{job_id}.mp4")
         queue.mark_done(job_id, cost, video_url)
         _callback(cfg, deps, callback_url, job_id, "done", spec, cost=cost, video_url=video_url)
+        # purge the workspace ONLY on success; a FAILED job's workspace is kept
+        # on disk so its artifacts/agent output can be diagnosed.
+        shutil.rmtree(ws, ignore_errors=True)
     except Exception as e:
         queue.mark_failed(job_id, f"runner error: {e}")
         _callback(cfg, deps, callback_url, job_id, "failed", spec, error=str(e))
-    finally:
-        shutil.rmtree(ws, ignore_errors=True)
 
 def _callback(cfg, deps, callback_url, job_id, status, spec, *, cost=None, video_url=None, error=None):
     if not callback_url:
