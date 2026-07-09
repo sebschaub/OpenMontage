@@ -120,6 +120,28 @@ def test_remotion_render_stages_cuts_and_audio_under_public_dir(tmp_path):
     assert _is_relative(msrc) and (pubdir / msrc).exists(), "music must be staged"
 
 
+def test_remotion_render_stages_non_source_asset_fields(tmp_path):
+    # Explainer scene types put images in `backgroundImage` (an absolute path),
+    # not `source`. Unstaged, that path reaches the composition as file:// and
+    # Chromium blocks it. Every asset-bearing cut field must be staged.
+    vc = VideoCompose()
+    v1 = _touch(tmp_path / "assets" / "video" / "s1.mp4")
+    bg = _touch(tmp_path / "assets" / "images" / "scene-6.jpg")
+    ed = {
+        "render_runtime": "remotion",
+        "renderer_family": "explainer-data",
+        "cuts": [
+            {"id": "c1", "source": str(v1)},
+            {"id": "c2", "type": "text_card", "backgroundImage": str(bg), "text": "hi"},
+        ],
+    }
+    cap = _run_remotion_capture(vc, ed, tmp_path / "renders" / "final.mp4")
+    pub = Path(next(c.split("=", 1)[1] for c in cap["cmd"] if c.startswith("--public-dir=")))
+    bgsrc = cap["props"]["cuts"][1]["backgroundImage"]
+    assert _is_relative(bgsrc), f"backgroundImage must be public-relative, got {bgsrc!r}"
+    assert (pub / bgsrc).exists() and not (pub / bgsrc).is_symlink(), "backgroundImage must be staged"
+
+
 def test_remotion_render_uses_1800s_timeout(tmp_path):
     vc = VideoCompose()
     v1 = _touch(tmp_path / "assets" / "video" / "s1.mp4")

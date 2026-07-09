@@ -1769,9 +1769,16 @@ class VideoCompose(BaseTool):
                 shutil.copy2(src, dest)
             return rel.as_posix()
 
+        # Stage EVERY asset a cut references, not just `source`. Scene types carry
+        # assets in different fields — e.g. explainer text_card/callout scenes use
+        # `backgroundImage` (an absolute path). Any un-staged absolute path reaches
+        # the composition as a file:// URL, which Chromium blocks -> render fails.
         for cut in props.get("cuts", []):
             if cut.get("source"):
                 cut["source"] = _stage(cut["source"])
+            for _k, _v in list(cut.items()):
+                if _k != "source" and isinstance(_v, str) and (_v.startswith("/") or _v.startswith("file://")):
+                    cut[_k] = _stage(_v)
 
         audio_block = props.get("audio")
         if isinstance(audio_block, dict):
