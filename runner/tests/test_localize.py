@@ -129,3 +129,23 @@ def test_synthesize_narration_unknown_lang_raises(tmp_path):
     with pytest.raises(KeyError):
         localize.synthesize_narration({"sections":[{"text":"x"}]},"xx-XX",str(tmp_path),
                                       tts=lambda i:None, concat=lambda p,o:None)
+
+from runner import localize
+
+def test_narration_to_captions_maps_word_timestamps():
+    def fake_transcribe(inputs):
+        assert inputs["language"]=="es"
+        class R:
+            success=True
+            data={"word_timestamps":[{"word":"Casi","start":0.1,"end":0.5},
+                                     {"word":"dos","start":0.5,"end":0.8}]}
+        return R()
+    caps=localize.narration_to_captions("/x/narration_full.mp3","es",transcribe=fake_transcribe)
+    assert caps==[{"word":"Casi","startMs":100,"endMs":500},
+                  {"word":"dos","startMs":500,"endMs":800}]
+
+def test_narration_to_captions_empty_when_no_words():
+    def fake_transcribe(inputs):
+        class R: success=True; data={"word_timestamps":[]}
+        return R()
+    assert localize.narration_to_captions("/x.mp3","es",transcribe=fake_transcribe)==[]

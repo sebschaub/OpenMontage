@@ -151,3 +151,14 @@ def synthesize_narration(script, language, workspace, tts=None, concat=None):
     full = os.path.join(audio_dir, "narration_full.mp3")
     concat(parts, full)
     return {"id": "narration-full", "type": "narration", "path": full}
+
+def narration_to_captions(narration_path, iso_lang, transcribe=None):
+    if transcribe is None:
+        from tools.analysis.transcriber import Transcriber
+        transcribe = Transcriber().execute
+    res = transcribe({"input_path": narration_path, "language": iso_lang})
+    if not getattr(res, "success", False):
+        raise RuntimeError(f"transcription failed: {getattr(res,'error','?')}")
+    words = (getattr(res, "data", {}) or {}).get("word_timestamps") or []
+    return [{"word": w["word"], "startMs": int(round(w["start"]*1000)),
+             "endMs": int(round(w["end"]*1000))} for w in words]
