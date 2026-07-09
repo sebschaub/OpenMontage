@@ -162,3 +162,66 @@ def narration_to_captions(narration_path, iso_lang, transcribe=None):
     words = (getattr(res, "data", {}) or {}).get("word_timestamps") or []
     return [{"word": w["word"], "startMs": int(round(w["start"]*1000)),
              "endMs": int(round(w["end"]*1000))} for w in words]
+
+def _video_duration(ed):
+    outs = [c.get("out_seconds", 0) for c in (ed.get("cuts") or [])]
+    return (max(outs) + 1) if outs else 0
+
+def localize_project(cfg, workspace, project_url, language, *,
+                     download=None, extract=None, translate=None,
+                     tts=None, transcribe=None, concat=None):
+    from runner import storage, project_archive
+    download = download or storage.download
+    extract = extract or project_archive.extract_project
+    translate = translate or (lambda s, l: translate_strings(s, l))
+    iso = language.split("-")[0]
+
+    # 1. fetch + unpack the archived reel project
+    key = project_url.split("/", 3)[-1] if project_url.startswith("http") else project_url
+    tar = os.path.join(workspace, "_project.tar.gz")
+    os.makedirs(workspace, exist_ok=True)
+    download(cfg, key, tar)
+    extract(tar, workspace)
+
+    art = os.path.join(workspace, "artifacts")
+    ed = json.load(open(os.path.join(art, "edit_decisions.json")))
+    am = json.load(open(os.path.join(art, "asset_manifest.json")))
+    script = json.load(open(os.path.join(art, "script.json")))
+
+    # 2. translate on-screen text + narration script (length-constrained)
+    strings = collect_strings(ed, script)
+    apply_translations(ed, script, translate(strings, language))
+
+    # 3. re-TTS narration; 4. concat happens inside synthesize_narration
+    narration = synthesize_narration(script, language, workspace, tts=tts, concat=concat)
+    am.setdefault("assets", [])
+    am["assets"] = [a for a in am["assets"] if a.get("type") != "narration"] + [narration]
+    ed.setdefault("audio", {}).setdefault("narration", {})
+    ed["audio"]["narration"]["segments"] = [{"asset_id": "narration-full", "start_seconds": 0}]
+
+    # duration guard: narration must fit the fixed video length
+    dur = _probe_seconds(narration["path"])
+    if dur > _video_duration(ed) + 0.75:
+        # one tighter retry, then give up rather than ship clipped audio
+        tighter = translate([s for s in (sec.get("text","") for sec in script["sections"])], language)
+        for sec, t in zip(script["sections"], tighter):
+            sec["text"] = t
+        narration = synthesize_narration(script, language, workspace, tts=tts, concat=concat)
+        dur = _probe_seconds(narration["path"])
+        if dur > _video_duration(ed) + 0.75:
+            raise RuntimeError(f"translated narration {dur:.1f}s exceeds video {_video_duration(ed)}s")
+
+    # 5. regenerate captions from the target-language narration
+    ed["captions"] = narration_to_captions(narration["path"], iso, transcribe=transcribe)
+
+    json.dump(ed, open(os.path.join(art, "edit_decisions.json"), "w"))
+    json.dump(am, open(os.path.join(art, "asset_manifest.json"), "w"))
+
+def _probe_seconds(path):
+    import subprocess
+    try:
+        p = subprocess.run(["ffprobe","-v","error","-show_entries","format=duration",
+                            "-of","csv=p=0", path], capture_output=True, text=True, timeout=60)
+        return float((p.stdout or "0").strip() or 0)
+    except Exception:
+        return 0.0
