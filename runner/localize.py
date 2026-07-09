@@ -48,3 +48,38 @@ def apply_translations(ed, script, translations):
         raise ValueError(f"translation count {len(translations)} != slot count {len(slots)}")
     for (c, k), t in zip(slots, translations):
         c[k] = t
+
+import json, subprocess
+
+def _extract_json_array(text):
+    """Pull the first JSON array out of the model's text (tolerates prose/fences)."""
+    s = text.find("[");
+    if s == -1: raise ValueError("no JSON array in translation output")
+    depth = 0
+    for i in range(s, len(text)):
+        if text[i] == "[": depth += 1
+        elif text[i] == "]":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[s:i+1])
+    raise ValueError("unterminated JSON array in translation output")
+
+def translate_strings(strings, target_language, runner=subprocess.run):
+    if not strings:
+        return []
+    prompt = (
+        f"Translate each item of this JSON array into {target_language}. "
+        "Return ONLY a JSON array of the same length, in the same order — no prose, no code fences.\n"
+        "Rules: keep each translation AT MOST the character length of its source (prefer shorter); "
+        "preserve numbers, %, URLs, and brand/product names verbatim; natural, idiomatic phrasing.\n\n"
+        + json.dumps(strings, ensure_ascii=False)
+    )
+    cmd = ["claude", "-p", prompt, "--permission-mode", "bypassPermissions",
+           "--model", "haiku", "--output-format", "json"]
+    proc = runner(cmd, capture_output=True, text=True, timeout=300)
+    data = json.loads(proc.stdout or "{}")
+    result = data.get("result", proc.stdout or "")
+    out = _extract_json_array(result if isinstance(result, str) else json.dumps(result))
+    if len(out) != len(strings):
+        raise ValueError(f"translation returned {len(out)} items for {len(strings)} inputs")
+    return [str(x) for x in out]

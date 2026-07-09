@@ -53,3 +53,32 @@ def test_apply_length_mismatch_raises():
     import pytest
     with pytest.raises(ValueError):
         localize.apply_translations(ed, script, ["too", "few"])
+
+import json as _json
+from runner import localize
+
+class _Proc:
+    def __init__(self, out): self.returncode=0; self.stdout=out; self.stderr=""
+
+def test_translate_strings_parses_json_array():
+    captured={}
+    def fake_runner(cmd, **kw):
+        captured["cmd"]=cmd
+        prompt=cmd[cmd.index("-p")+1]
+        assert "es-ES" in prompt and "JSON array" in prompt
+        return _Proc(_json.dumps({"result": '["Hola","Mundo"]'}))
+    out=localize.translate_strings(["Hi","World"], "es-ES", runner=fake_runner)
+    assert out==["Hola","Mundo"]
+    assert "--model" in captured["cmd"] and "haiku" in captured["cmd"]
+
+def test_translate_strings_wrong_count_raises():
+    def fake_runner(cmd, **kw): return _Proc(_json.dumps({"result":'["only one"]'}))
+    import pytest
+    with pytest.raises(ValueError):
+        localize.translate_strings(["a","b"], "es-ES", runner=fake_runner)
+
+def test_translate_strings_empty_is_noop():
+    calls={"n":0}
+    def fake_runner(cmd, **kw): calls["n"]+=1; return _Proc("{}")
+    assert localize.translate_strings([], "es-ES", runner=fake_runner)==[]
+    assert calls["n"]==0
