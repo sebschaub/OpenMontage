@@ -28,3 +28,12 @@ def test_build_prompt_bootstraps_agent_guide_and_asset_contract():
     assert "AGENT_GUIDE" in p
     assert "asset_manifest" in p and "cuts[].source" in p
     assert "/w/artifacts" in p and "/w/assets" in p   # workspace-scoped output
+
+def test_reel_localize_is_deterministic_portrait():
+    p = pipelines.resolve("reel-localize")
+    assert p.deterministic is True
+    assert p.renders_via_runner is True
+    assert p.default_profile == "instagram_reels"
+
+def test_existing_pipelines_default_not_deterministic():
+    assert pipelines.resolve("reel").deterministic is False

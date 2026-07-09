@@ -5,12 +5,14 @@ class Pipeline:
     manifest: str
     default_profile: str
     renders_via_runner: bool   # True => agent stops at edit_decisions; runner renders
+    deterministic: bool = False  # True => runner runs a code transform instead of the agent
 
 PIPELINES = {
     "reel":                Pipeline("animated-explainer", "instagram_reels",  True),
     "animated-explainer":  Pipeline("animated-explainer", "youtube_landscape", True),
     "avatar-spokesperson": Pipeline("avatar-spokesperson", "instagram_reels", False),
     "localization-dub":    Pipeline("localization-dub",   "source",           False),
+    "reel-localize":       Pipeline("",                   "instagram_reels",  True, deterministic=True),
 }
 
 def resolve(alias: str) -> Pipeline:
