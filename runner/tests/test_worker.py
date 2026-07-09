@@ -118,3 +118,37 @@ def test_archive_upload_failure_does_not_fail_successful_render(tmp_path):
     assert d.callbacks[0]["status"] == "done"           # "done" callback fires
     assert d.callbacks[0]["url"].endswith("j5.mp4")     # video url still present
     assert d.callbacks[0]["projectUrl"] is None          # archive failure -> no project url
+
+def test_deterministic_job_runs_localize_not_agent(tmp_path):
+    cfg=type("C",(),{"projects_dir":str(tmp_path),"max_attempts":2})()
+    ran={"agent":0,"localize":None}
+    class Q:
+        def claim_next(self): return {"id":"loc1","attempts":1,"spec":{
+            "pipeline":"reel-localize","callbackUrl":"http://cb","articleId":7,
+            "inputs":{"projectUrl":"https://pub/projects/job9.tar.gz","language":"es-ES"}}}
+        def mark_done(self,*a): pass
+        def requeue(self,*a): pass
+        def mark_failed(self,*a): pass
+    def fake_agent(*a,**k): ran["agent"]+=1; return type("A",(),{"ok":True,"cost_usd":9.0,"log_tail":""})()
+    def fake_ensure_final(ws,profile):
+        os.makedirs(os.path.join(ws,"renders"),exist_ok=True)
+        open(os.path.join(ws,"renders","final.mp4"),"wb").write(b"\x00")
+        return type("R",(),{"ok":True,"final_path":os.path.join(ws,"renders","final.mp4"),
+                            "asset_manifest":{},"error":None})()
+    def fake_upload(cfg,path,key,**k): return f"https://pub/{key}"
+    cb={}
+    def fake_send(cfg,url,payload): cb.update(payload)
+    deps=type("D",(),{"run_agent":staticmethod(fake_agent),
+                      "ensure_final":staticmethod(fake_ensure_final),
+                      "upload":staticmethod(fake_upload),"send":staticmethod(fake_send)})()
+    import runner.worker as w
+    orig=__import__("runner.localize",fromlist=["localize_project"]).localize_project
+    def fake_localize(cfg,ws,url,lang,**k): ran["localize"]=(url,lang)
+    import runner.localize as L; L.localize_project=fake_localize
+    try:
+        w.run_once(cfg, Q(), deps)
+    finally:
+        L.localize_project=orig
+    assert ran["agent"]==0
+    assert ran["localize"]==("https://pub/projects/job9.tar.gz","es-ES")
+    assert cb["status"]=="done" and cb["costUsd"]==0.0

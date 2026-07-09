@@ -46,10 +46,16 @@ def process_job(cfg, queue, job, deps):
         profile = spec.get("mediaProfile") or p.default_profile
         cap = spec.get("budgetCapUsd", 2.0)
         os.makedirs(ws, exist_ok=True)
-        with open(os.path.join(ws, "brief.json"), "w") as f:
-            json.dump(spec.get("inputs", {}), f)
-        ar = deps.run_agent(cfg, alias, ws, os.path.join(ws, "brief.json"),
-                            profile, cap, cfg.job_timeout_sec)
+        if p.deterministic:
+            from runner import localize as localize_mod
+            inp = spec.get("inputs", {})
+            localize_mod.localize_project(cfg, ws, inp["projectUrl"], inp["language"])
+            ar = agent_mod.AgentResult(True, 0.0, "")   # no agent, no agent cost
+        else:
+            with open(os.path.join(ws, "brief.json"), "w") as f:
+                json.dump(spec.get("inputs", {}), f)
+            ar = deps.run_agent(cfg, alias, ws, os.path.join(ws, "brief.json"),
+                                profile, cap, cfg.job_timeout_sec)
         rr = deps.ensure_final(ws, profile)
         if not rr.ok:
             err = (rr.error or "render failed") + "\n--agent log--\n" + (ar.log_tail or "")
