@@ -101,3 +101,31 @@ def test_extract_json_array_no_array_raises():
     import pytest
     with pytest.raises(ValueError):
         localize._extract_json_array("Sorry, I can't help with that.")
+
+import os
+from runner import localize
+
+def test_synthesize_narration_tts_per_section_then_concat(tmp_path):
+    script={"sections":[{"id":"s0","text":"Uno","start_seconds":0},
+                        {"id":"s1","text":"Dos","start_seconds":5}]}
+    tts_calls=[]
+    def fake_tts(inputs):
+        tts_calls.append(inputs); open(inputs["output_path"],"wb").write(b"\x00")
+        class R: success=True; error=None
+        return R()
+    concat_calls={}
+    def fake_concat(parts, out_path):
+        concat_calls["parts"]=parts; open(out_path,"wb").write(b"\x00")
+    asset=localize.synthesize_narration(script,"es-ES",str(tmp_path),tts=fake_tts,concat=fake_concat)
+    assert asset["id"]=="narration-full" and asset["type"]=="narration"
+    assert asset["path"].endswith("assets/audio/narration_full.mp3")
+    assert [c["language_code"] for c in tts_calls]==["es-ES","es-ES"]
+    assert tts_calls[0]["voice"]==localize.LANG_VOICE["es-ES"]
+    # concat received (path, start_seconds) per section in order
+    assert [p[1] for p in concat_calls["parts"]]==[0,5]
+
+def test_synthesize_narration_unknown_lang_raises(tmp_path):
+    import pytest
+    with pytest.raises(KeyError):
+        localize.synthesize_narration({"sections":[{"text":"x"}]},"xx-XX",str(tmp_path),
+                                      tts=lambda i:None, concat=lambda p,o:None)

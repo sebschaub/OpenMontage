@@ -114,3 +114,40 @@ def translate_strings(strings, target_language, runner=subprocess.run):
     if len(out) != len(strings):
         raise ValueError(f"translation returned {len(out)} items for {len(strings)} inputs")
     return [str(x) for x in out]
+
+import os
+
+# Google Cloud TTS voices per target language. Neural2 = broadly available + cheap
+# ($16/1M chars). VALIDATE names against the live voices list before shipping
+# (see deploy task); wrong ids 400 from the API.
+LANG_VOICE = {
+    "es-ES": "es-ES-Neural2-B",
+    "fr-FR": "fr-FR-Neural2-B",
+    "de-DE": "de-DE-Neural2-B",
+    "pt-BR": "pt-BR-Neural2-B",
+    "pt-PT": "pt-PT-Wavenet-B",
+}
+
+def synthesize_narration(script, language, workspace, tts=None, concat=None):
+    if tts is None:
+        from tools.audio.google_tts import GoogleTTS
+        tts = GoogleTTS().execute
+    if concat is None:
+        from runner.render import _ffmpeg_concat_narration as concat
+    voice = LANG_VOICE[language]            # KeyError on unsupported language
+    audio_dir = os.path.join(workspace, "assets", "audio")
+    os.makedirs(audio_dir, exist_ok=True)
+    parts = []
+    for i, sec in enumerate(script.get("sections") or []):
+        text = (sec.get("text") or "").strip()
+        if not text:
+            continue
+        out = os.path.join(audio_dir, f"loc_narration_{i}.mp3")
+        res = tts({"text": text, "voice": voice, "language_code": language,
+                   "audio_encoding": "MP3", "output_path": out})
+        if not getattr(res, "success", False):
+            raise RuntimeError(f"TTS failed for section {i}: {getattr(res,'error','?')}")
+        parts.append((out, sec.get("start_seconds", 0)))
+    full = os.path.join(audio_dir, "narration_full.mp3")
+    concat(parts, full)
+    return {"id": "narration-full", "type": "narration", "path": full}
