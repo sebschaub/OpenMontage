@@ -64,3 +64,31 @@ def test_bad_pipeline_fails_without_raising(tmp_path):
     assert worker.run_once(cfg, q, d) is True   # returns, does not raise
     assert q.get("j4")["status"] == "failed"
     assert d.callbacks[0]["status"] == "failed"
+
+def test_reel_success_archives_project_and_callbacks_projecturl(tmp_path, monkeypatch):
+    cfg=type("C",(),{"projects_dir":str(tmp_path),"max_attempts":2,"job_timeout_sec":1800})()
+    # a reel job whose render "succeeds": stub ensure_final to drop a script.json + final
+    sent={}
+    class Q:
+        def claim_next(self): return {"id":"job9","attempts":1,
+            "spec":{"pipeline":"reel","callbackUrl":"http://cb","articleId":42,"inputs":{}}}
+        def mark_done(self, jid, cost, url): sent["done"]=(jid,cost,url)
+        def requeue(self, jid): pass
+        def mark_failed(self, jid, e): pass
+    def fake_run_agent(*a, **k): return type("A",(),{"ok":True,"cost_usd":0.0,"log_tail":""})()
+    def fake_ensure_final(ws, profile):
+        os.makedirs(os.path.join(ws,"artifacts"),exist_ok=True)
+        json.dump({"sections":[]}, open(os.path.join(ws,"artifacts","script.json"),"w"))
+        os.makedirs(os.path.join(ws,"renders"),exist_ok=True)
+        open(os.path.join(ws,"renders","final.mp4"),"wb").write(b"\x00")
+        return type("R",(),{"ok":True,"final_path":os.path.join(ws,"renders","final.mp4"),
+                            "asset_manifest":{},"error":None})()
+    uploads=[]
+    def fake_upload(cfg, path, key, **kw): uploads.append(key); return f"https://pub/{key}"
+    def fake_send(cfg, url, payload): sent["cb"]=payload
+    deps=type("D",(),{"run_agent":staticmethod(fake_run_agent),
+                      "ensure_final":staticmethod(fake_ensure_final),
+                      "upload":staticmethod(fake_upload),"send":staticmethod(fake_send)})()
+    worker.run_once(cfg, Q(), deps)
+    assert any(k.startswith("projects/job9") for k in uploads)   # project archived
+    assert sent["cb"]["projectUrl"].startswith("https://pub/projects/job9")

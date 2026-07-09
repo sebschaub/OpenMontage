@@ -1,6 +1,6 @@
 import json, os, shutil
 from runner import agent as agent_mod, render as render_mod, storage as storage_mod
-from runner import callback as callback_mod, cost as cost_mod, pipelines
+from runner import callback as callback_mod, cost as cost_mod, pipelines, project_archive
 
 class Deps:
     run_agent = staticmethod(agent_mod.run_agent)
@@ -10,6 +10,16 @@ class Deps:
 
 def _default_deps():
     return Deps()
+
+def _archive_reel_project(cfg, deps, ws, job_id, p):
+    """Archive a re-renderable reel project (has script.json) so it can be localized later."""
+    if p.deterministic or not p.renders_via_runner:
+        return None
+    if not os.path.exists(os.path.join(ws, "artifacts", "script.json")):
+        return None
+    tar = os.path.join(ws, "_project.tar.gz")
+    project_archive.archive_project(ws, tar)
+    return deps.upload(cfg, tar, f"projects/{job_id}.tar.gz", content_type="application/gzip")
 
 def run_once(cfg, queue, deps=None) -> bool:
     deps = deps or _default_deps()
@@ -40,8 +50,10 @@ def process_job(cfg, queue, job, deps):
             return
         cost = cost_mod.total_cost(ar.cost_usd, rr.asset_manifest)
         video_url = deps.upload(cfg, rr.final_path, f"videos/{job_id}.mp4")
+        project_url = _archive_reel_project(cfg, deps, ws, job_id, p)
         queue.mark_done(job_id, cost, video_url)
-        _callback(cfg, deps, callback_url, job_id, "done", spec, cost=cost, video_url=video_url)
+        _callback(cfg, deps, callback_url, job_id, "done", spec,
+                  cost=cost, video_url=video_url, project_url=project_url)
         shutil.rmtree(ws, ignore_errors=True)   # purge only on success
     except Exception as e:
         _fail_or_retry(cfg, queue, job, ws, callback_url, spec, deps, f"runner error: {e}")
@@ -57,10 +69,11 @@ def _fail_or_retry(cfg, queue, job, ws, callback_url, spec, deps, error):
     queue.mark_failed(job["id"], error[:4000])
     _callback(cfg, deps, callback_url, job["id"], "failed", spec, error=error[:1500])
 
-def _callback(cfg, deps, callback_url, job_id, status, spec, *, cost=None, video_url=None, error=None):
+def _callback(cfg, deps, callback_url, job_id, status, spec, *, cost=None, video_url=None,
+              error=None, project_url=None):
     if not callback_url:
         return
     payload = {"jobId": job_id, "status": status, "pipeline": spec.get("pipeline"),
                "articleId": spec.get("articleId"), "costUsd": cost,
-               "url": video_url, "error": error}
+               "url": video_url, "projectUrl": project_url, "error": error}
     deps.send(cfg, callback_url, payload)
