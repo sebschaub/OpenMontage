@@ -82,3 +82,22 @@ def test_translate_strings_empty_is_noop():
     def fake_runner(cmd, **kw): calls["n"]+=1; return _Proc("{}")
     assert localize.translate_strings([], "es-ES", runner=fake_runner)==[]
     assert calls["n"]==0
+
+def test_extract_json_array_handles_bracket_inside_string():
+    # A translated element containing a stray "]" must not desync the depth count.
+    assert localize._extract_json_array('["a]b", "cd"]') == ["a]b", "cd"]
+
+def test_extract_json_array_strips_fence():
+    assert localize._extract_json_array('```json\n["x", "y"]\n```') == ["x", "y"]
+
+def test_extract_json_array_prose_wrapped_with_bracket_in_string():
+    # Exercises the string-aware fallback scan specifically: prose around the
+    # fence means the fast-path whole-text json.loads can't apply directly,
+    # so the depth-counting scan must still skip "]" inside quoted values.
+    text = 'Sure, here is the translation:\n```json\n["a]b", "cd"]\n```\nHope that helps!'
+    assert localize._extract_json_array(text) == ["a]b", "cd"]
+
+def test_extract_json_array_no_array_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        localize._extract_json_array("Sorry, I can't help with that.")

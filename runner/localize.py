@@ -51,14 +51,45 @@ def apply_translations(ed, script, translations):
 
 import json, subprocess
 
+_FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+
 def _extract_json_array(text):
-    """Pull the first JSON array out of the model's text (tolerates prose/fences)."""
-    s = text.find("[");
+    """Pull the first JSON array out of the model's text (tolerates prose/fences).
+
+    Fast path: the whole (fence-stripped) text is itself a JSON array — this is
+    the common case since the prompt asks for ONLY a JSON array, and json.loads
+    is inherently correct about brackets inside quoted strings.
+
+    Fallback: prose surrounds the array. Scan from the first "[", but track
+    whether we're inside a JSON string (honoring backslash escapes) so that
+    "[" / "]" inside translated string values don't perturb the depth count.
+    """
+    candidate = text.strip()
+    m = _FENCE_RE.match(candidate)
+    if m:
+        candidate = m.group(1).strip()
+    try:
+        parsed = json.loads(candidate)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, list):
+        return parsed
+
+    s = text.find("[")
     if s == -1: raise ValueError("no JSON array in translation output")
     depth = 0
+    in_string = False
+    escaped = False
     for i in range(s, len(text)):
-        if text[i] == "[": depth += 1
-        elif text[i] == "]":
+        ch = text[i]
+        if in_string:
+            if escaped: escaped = False
+            elif ch == "\\": escaped = True
+            elif ch == '"': in_string = False
+            continue
+        if ch == '"': in_string = True
+        elif ch == "[": depth += 1
+        elif ch == "]":
             depth -= 1
             if depth == 0:
                 return json.loads(text[s:i+1])
