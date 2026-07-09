@@ -92,3 +92,29 @@ def test_reel_success_archives_project_and_callbacks_projecturl(tmp_path, monkey
     worker.run_once(cfg, Q(), deps)
     assert any(k.startswith("projects/job9") for k in uploads)   # project archived
     assert sent["cb"]["projectUrl"].startswith("https://pub/projects/job9")
+
+def test_archive_upload_failure_does_not_fail_successful_render(tmp_path):
+    # Project archiving is best-effort: the video already uploaded successfully, so a
+    # failure in the (secondary) project-archive upload must still land the job as
+    # "done" with projectUrl=None — not a requeue or a "failed" callback.
+    cfg = _cfg(tmp_path); q = JobQueue(cfg.db_path); d = Deps(tmp_path)
+    from runner.render import RenderResult
+    def flaky_ensure_final(ws, profile):
+        os.makedirs(os.path.join(ws, "artifacts"), exist_ok=True)
+        json.dump({"sections": []}, open(os.path.join(ws, "artifacts", "script.json"), "w"))
+        return RenderResult(True, os.path.join(ws, "renders", "final.mp4"),
+                            {"assets": [{"cost_usd": 0.2}]})
+    def flaky_upload(cfg, path, key, **kwargs):
+        if key.startswith("projects/"):
+            raise RuntimeError("simulated S3 failure")
+        return f"http://pub/{key}"
+    d.ensure_final = flaky_ensure_final
+    d.upload = flaky_upload
+    q.enqueue("j5", "reel", None, {"pipeline": "reel", "callbackUrl": "https://b/cb",
+              "budgetCapUsd": 2.0, "inputs": {"title": "t"}})
+    assert worker.run_once(cfg, q, d) is True
+    job = q.get("j5")
+    assert job["status"] == "done"                     # video succeeded -> job still done
+    assert d.callbacks[0]["status"] == "done"           # "done" callback fires
+    assert d.callbacks[0]["url"].endswith("j5.mp4")     # video url still present
+    assert d.callbacks[0]["projectUrl"] is None          # archive failure -> no project url

@@ -1,4 +1,4 @@
-import json, os, shutil
+import json, os, shutil, sys
 from runner import agent as agent_mod, render as render_mod, storage as storage_mod
 from runner import callback as callback_mod, cost as cost_mod, pipelines, project_archive
 
@@ -12,14 +12,21 @@ def _default_deps():
     return Deps()
 
 def _archive_reel_project(cfg, deps, ws, job_id, p):
-    """Archive a re-renderable reel project (has script.json) so it can be localized later."""
+    """Archive a re-renderable reel project (has script.json) so it can be localized later.
+    Best-effort: the video has already been uploaded by the time this runs, so an archive
+    failure (tar/upload error) must never fail an otherwise-successful render — log and
+    return None instead of raising."""
     if p.deterministic or not p.renders_via_runner:
         return None
     if not os.path.exists(os.path.join(ws, "artifacts", "script.json")):
         return None
-    tar = os.path.join(ws, "_project.tar.gz")
-    project_archive.archive_project(ws, tar)
-    return deps.upload(cfg, tar, f"projects/{job_id}.tar.gz", content_type="application/gzip")
+    try:
+        tar = os.path.join(ws, "_project.tar.gz")
+        project_archive.archive_project(ws, tar)
+        return deps.upload(cfg, tar, f"projects/{job_id}.tar.gz", content_type="application/gzip")
+    except Exception as e:
+        print(f"project archive failed for {job_id}: {e}", file=sys.stderr)
+        return None
 
 def run_once(cfg, queue, deps=None) -> bool:
     deps = deps or _default_deps()
