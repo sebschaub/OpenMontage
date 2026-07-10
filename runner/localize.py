@@ -164,6 +164,28 @@ def _video_duration(ed):
     outs = [c.get("out_seconds", 0) for c in (ed.get("cuts") or [])]
     return (max(outs) + 1) if outs else 0
 
+def _rebase_asset_paths(ed, am, workspace):
+    """Archived projects carry absolute paths from the ORIGINAL (now-purged)
+    render workspace. After extract, every asset lives at {workspace}/assets/<suffix>.
+    Rewrite manifest paths + every absolute cut/audio asset field onto this
+    workspace so the render resolves them. (arcname='assets' guarantees the layout.)"""
+    def rebase(p):
+        if isinstance(p, str) and "/assets/" in p:
+            return os.path.join(workspace, "assets", p.split("/assets/", 1)[1])
+        return p
+    for a in (am.get("assets") or []):
+        if a.get("path"):
+            a["path"] = rebase(a["path"])
+    for cut in (ed.get("cuts") or []):
+        for k, v in list(cut.items()):
+            if isinstance(v, str):
+                cut[k] = rebase(v)          # backgroundImage/backgroundVideo/source/etc.
+    audio = ed.get("audio") or {}
+    for block in audio.values():
+        if isinstance(block, dict) and isinstance(block.get("src"), str):
+            block["src"] = rebase(block["src"])
+    return ed, am
+
 def localize_project(cfg, workspace, project_url, language, *,
                      download=None, extract=None, translate=None,
                      tts=None, transcribe=None, concat=None):
@@ -184,6 +206,10 @@ def localize_project(cfg, workspace, project_url, language, *,
     ed = json.load(open(os.path.join(art, "edit_decisions.json")))
     am = json.load(open(os.path.join(art, "asset_manifest.json")))
     script = json.load(open(os.path.join(art, "script.json")))
+
+    # archived asset paths point at the (now-purged) original render workspace —
+    # rebase them onto this workspace before anything else touches them.
+    ed, am = _rebase_asset_paths(ed, am, workspace)
 
     # 2. translate on-screen text + narration script (length-constrained)
     strings = collect_strings(ed, script)

@@ -151,16 +151,62 @@ def test_narration_to_captions_empty_when_no_words():
         return R()
     assert localize.narration_to_captions("/x.mp3","es",transcribe=fake_transcribe)==[]
 
+import os
+from runner import localize
+
+def test_rebase_asset_paths_rewrites_manifest_and_cut_paths():
+    # Archived projects carry absolute paths from the ORIGINAL (now-purged) render
+    # workspace, e.g. /opt/openmontage/projects/{original_job}/assets/images/scene-6.jpg.
+    old_img = "/opt/openmontage/projects/OLDJOB/assets/images/x.jpg"
+    old_music = "/opt/openmontage/projects/OLDJOB/assets/audio/bed.mp3"
+    ed = {
+        "cuts": [{"type": "text_card", "text": "Hello",
+                  "backgroundImage": old_img, "source": "vid-1"}],
+        "audio": {"music": {"src": old_music}},
+    }
+    am = {"assets": [{"id": "img0", "type": "image", "path": old_img}]}
+    new_ws = "/work/newjob"
+
+    ed2, am2 = localize._rebase_asset_paths(ed, am, new_ws)
+
+    manifest_path = am2["assets"][0]["path"]
+    cut_bg = ed2["cuts"][0]["backgroundImage"]
+    for p in (manifest_path, cut_bg):
+        assert p.startswith(new_ws)
+        assert p.endswith("assets/images/x.jpg")
+        assert "OLDJOB" not in p
+    assert manifest_path == os.path.join(new_ws, "assets", "images", "x.jpg")
+    assert cut_bg == os.path.join(new_ws, "assets", "images", "x.jpg")
+    # non-path cut field (an id, not an asset path) is left alone
+    assert ed2["cuts"][0]["source"] == "vid-1"
+    # absolute audio src (e.g. a music bed) is rebased too
+    assert ed2["audio"]["music"]["src"] == os.path.join(new_ws, "assets", "audio", "bed.mp3")
+
+def test_rebase_asset_paths_leaves_non_asset_paths_untouched():
+    ed = {"cuts": [{"type": "text_card", "text": "Hello"}]}
+    am = {"assets": [{"id": "n0", "type": "narration", "path": "/old/en.mp3"}]}
+    ed2, am2 = localize._rebase_asset_paths(ed, am, "/work/newjob")
+    # no "/assets/" substring in the path -> left as-is (e.g. narration gets
+    # rewritten later by synthesize_narration, not by the rebase step)
+    assert am2["assets"][0]["path"] == "/old/en.mp3"
+
 import json, os
 from runner import localize
 
+# Non-narration asset paths in the archive point at the ORIGINAL (purged) render
+# workspace — e.g. /opt/openmontage/projects/OLDJOB/assets/images/x.jpg — and must
+# get rebased onto the new localize workspace (see _rebase_asset_paths).
+_OLD_IMG = "/opt/openmontage/projects/OLDJOB/assets/images/x.jpg"
+
 def _write_project(ws):
     os.makedirs(os.path.join(ws,"artifacts")); os.makedirs(os.path.join(ws,"assets","audio"))
-    ed={"cuts":[{"type":"text_card","text":"Hello","out_seconds":9}],
+    ed={"cuts":[{"type":"text_card","text":"Hello","out_seconds":9,
+                 "backgroundImage":_OLD_IMG}],
         "captions":[{"word":"Hello","startMs":0,"endMs":900}],
         "audio":{"narration":{"segments":[{"asset_id":"en0","start_seconds":0}]}},
         "renderer_family":"explainer-data"}
-    am={"version":"1.0","assets":[{"id":"en0","type":"narration","path":"/old/en.mp3"}]}
+    am={"version":"1.0","assets":[{"id":"en0","type":"narration","path":"/old/en.mp3"},
+                                   {"id":"img0","type":"image","path":_OLD_IMG}]}
     script={"title":"T","sections":[{"id":"s0","text":"Hello world","start_seconds":0}]}
     json.dump(ed, open(os.path.join(ws,"artifacts","edit_decisions.json"),"w"))
     json.dump(am, open(os.path.join(ws,"artifacts","asset_manifest.json"),"w"))
@@ -187,8 +233,14 @@ def test_localize_project_produces_spanish_render_inputs(tmp_path):
     assert ed["cuts"][0]["text"]=="Hello-ES"
     assert ed["captions"]==[{"word":"Hola","startMs":0,"endMs":900}]
     assert ed["audio"]["narration"]["segments"]==[{"asset_id":"narration-full","start_seconds":0}]
+    # non-narration asset paths (image backgrounds, b-roll, music) must survive
+    # the whole pipeline rebased onto THIS workspace, not the purged original one.
+    bg = ed["cuts"][0]["backgroundImage"]
+    assert bg.startswith(ws) and bg.endswith("assets/images/x.jpg") and "OLDJOB" not in bg
     am=json.load(open(os.path.join(ws,"artifacts","asset_manifest.json")))
     assert any(a["id"]=="narration-full" for a in am["assets"])
+    img = next(a for a in am["assets"] if a["id"]=="img0")
+    assert img["path"]==os.path.join(ws,"assets","images","x.jpg")
 
 def test_localize_duration_guard_retries_then_raises(tmp_path, monkeypatch):
     ws=str(tmp_path/"job")
