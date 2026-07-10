@@ -117,24 +117,22 @@ def translate_strings(strings, target_language, runner=subprocess.run):
 
 import os
 
-# Google Cloud TTS voices per target language. Neural2 = broadly available + cheap
-# ($16/1M chars). VALIDATE names against the live voices list before shipping
-# (see deploy task); wrong ids 400 from the API.
-LANG_VOICE = {
-    "es-ES": "es-ES-Neural2-B",
-    "fr-FR": "fr-FR-Neural2-B",
-    "de-DE": "de-DE-Neural2-B",
-    "pt-BR": "pt-BR-Neural2-B",
-    "pt-PT": "pt-PT-Wavenet-B",
-}
+# eleven_multilingual_v2 speaks the language of the input text, so ONE voice
+# (ElevenLabs default, Rachel) covers every target language — no per-language
+# voice map. Google Cloud TTS was the original design, but the worker has no
+# Cloud TTS credential; ElevenLabs is the working multilingual provider (also
+# what the reel pipeline + the first Spanish dub use). The translated
+# script.json text drives the spoken language. SUPPORTED_LANGUAGES guards typos.
+SUPPORTED_LANGUAGES = {"es-ES", "fr-FR", "de-DE", "pt-BR", "pt-PT"}
 
 def synthesize_narration(script, language, workspace, tts=None, concat=None):
+    if language not in SUPPORTED_LANGUAGES:
+        raise KeyError(f"unsupported language: {language!r}")
     if tts is None:
-        from tools.audio.google_tts import GoogleTTS
-        tts = GoogleTTS().execute
+        from tools.audio.elevenlabs_tts import ElevenLabsTTS
+        tts = ElevenLabsTTS().execute
     if concat is None:
         from runner.render import _ffmpeg_concat_narration as concat
-    voice = LANG_VOICE[language]            # KeyError on unsupported language
     audio_dir = os.path.join(workspace, "assets", "audio")
     os.makedirs(audio_dir, exist_ok=True)
     parts = []
@@ -143,8 +141,7 @@ def synthesize_narration(script, language, workspace, tts=None, concat=None):
         if not text:
             continue
         out = os.path.join(audio_dir, f"loc_narration_{i}.mp3")
-        res = tts({"text": text, "voice": voice, "language_code": language,
-                   "audio_encoding": "MP3", "output_path": out})
+        res = tts({"text": text, "output_path": out})   # eleven_multilingual_v2 default
         if not getattr(res, "success", False):
             raise RuntimeError(f"TTS failed for section {i}: {getattr(res,'error','?')}")
         parts.append((out, sec.get("start_seconds", 0)))

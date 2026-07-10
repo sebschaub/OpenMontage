@@ -119,8 +119,9 @@ def test_synthesize_narration_tts_per_section_then_concat(tmp_path):
     asset=localize.synthesize_narration(script,"es-ES",str(tmp_path),tts=fake_tts,concat=fake_concat)
     assert asset["id"]=="narration-full" and asset["type"]=="narration"
     assert asset["path"].endswith("assets/audio/narration_full.mp3")
-    assert [c["language_code"] for c in tts_calls]==["es-ES","es-ES"]
-    assert tts_calls[0]["voice"]==localize.LANG_VOICE["es-ES"]
+    # one TTS call per non-empty section, each fed the (already-translated) text;
+    # eleven_multilingual_v2 infers the language from the text (no voice/lang args)
+    assert [c["text"] for c in tts_calls]==["Uno","Dos"]
     # concat received (path, start_seconds) per section in order
     assert [p[1] for p in concat_calls["parts"]]==[0,5]
 
