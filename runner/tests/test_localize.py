@@ -242,6 +242,57 @@ def test_localize_project_produces_spanish_render_inputs(tmp_path):
     img = next(a for a in am["assets"] if a["id"]=="img0")
     assert img["path"]==os.path.join(ws,"assets","images","x.jpg")
 
+def _write_project_no_captions(ws):
+    # Mirrors _write_project but omits "captions" entirely — this is what real
+    # runner-rendered reels archive, since they stop before the compose-time
+    # caption step (see localize_project's had_captions guard).
+    os.makedirs(os.path.join(ws,"artifacts")); os.makedirs(os.path.join(ws,"assets","audio"))
+    ed={"cuts":[{"type":"text_card","text":"Hello","out_seconds":9,
+                 "backgroundImage":_OLD_IMG}],
+        "audio":{"narration":{"segments":[{"asset_id":"en0","start_seconds":0}]}},
+        "renderer_family":"explainer-data"}
+    am={"version":"1.0","assets":[{"id":"en0","type":"narration","path":"/old/en.mp3"},
+                                   {"id":"img0","type":"image","path":_OLD_IMG}]}
+    script={"title":"T","sections":[{"id":"s0","text":"Hello world","start_seconds":0}]}
+    json.dump(ed, open(os.path.join(ws,"artifacts","edit_decisions.json"),"w"))
+    json.dump(am, open(os.path.join(ws,"artifacts","asset_manifest.json"),"w"))
+    json.dump(script, open(os.path.join(ws,"artifacts","script.json"),"w"))
+
+def test_localize_project_skips_caption_regen_when_no_original_captions(tmp_path):
+    # Runner-rendered reels have no captions[] in their archived edit_decisions.
+    # localize_project must NOT try to transcribe/regenerate captions for them —
+    # doing so would require faster-whisper (not installed on the worker) and
+    # would add captions the original reel never had.
+    ws=str(tmp_path/"job")
+    def fake_extract(tar, dest): _write_project_no_captions(dest)
+    def fake_download(cfg,key,local): open(local,"wb").write(b"x"); return local
+    def fake_translate(strings, lang): return [s+"-ES" for s in strings]
+    def fake_tts(inputs):
+        open(inputs["output_path"],"wb").write(b"\x00")
+        return type("R",(),{"success":True,"error":None})()
+    def fake_concat(parts,out): open(out,"wb").write(b"\x00")
+    transcribe_calls={"n":0}
+    def fake_transcribe(inputs):
+        transcribe_calls["n"]+=1
+        raise AssertionError("transcribe should not be called when the original reel had no captions")
+    localize.localize_project(_Cfg(), ws, "projects/job.tar.gz", "es-ES",
+        download=fake_download, extract=fake_extract, translate=fake_translate,
+        tts=fake_tts, transcribe=fake_transcribe, concat=fake_concat)
+
+    assert transcribe_calls["n"]==0
+
+    ed=json.load(open(os.path.join(ws,"artifacts","edit_decisions.json")))
+    assert "captions" not in ed
+    # everything else still happens as normal
+    assert ed["cuts"][0]["text"]=="Hello-ES"
+    assert ed["audio"]["narration"]["segments"]==[{"asset_id":"narration-full","start_seconds":0}]
+    bg = ed["cuts"][0]["backgroundImage"]
+    assert bg.startswith(ws) and bg.endswith("assets/images/x.jpg") and "OLDJOB" not in bg
+    am=json.load(open(os.path.join(ws,"artifacts","asset_manifest.json")))
+    assert any(a["id"]=="narration-full" for a in am["assets"])
+    img = next(a for a in am["assets"] if a["id"]=="img0")
+    assert img["path"]==os.path.join(ws,"assets","images","x.jpg")
+
 def test_localize_duration_guard_retries_then_raises(tmp_path, monkeypatch):
     ws=str(tmp_path/"job")
     def fake_extract(tar,dest): _write_project(dest)

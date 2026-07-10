@@ -207,6 +207,11 @@ def localize_project(cfg, workspace, project_url, language, *,
     am = json.load(open(os.path.join(art, "asset_manifest.json")))
     script = json.load(open(os.path.join(art, "script.json")))
 
+    # Runner-rendered reels stop before the compose-time caption step, so their
+    # archived edit_decisions has no captions[] at all — only regenerate captions
+    # for projects that originally had them (see caption regen below).
+    had_captions = bool(ed.get("captions"))
+
     # archived asset paths point at the (now-purged) original render workspace —
     # rebase them onto this workspace before anything else touches them.
     ed, am = _rebase_asset_paths(ed, am, workspace)
@@ -234,8 +239,21 @@ def localize_project(cfg, workspace, project_url, language, *,
         if dur > _video_duration(ed) + 0.75:
             raise RuntimeError(f"translated narration {dur:.1f}s exceeds video {_video_duration(ed)}s")
 
-    # 5. regenerate captions from the target-language narration
-    ed["captions"] = narration_to_captions(narration["path"], iso, transcribe=transcribe)
+    # 5. regenerate captions from the target-language narration — but only if
+    # the original reel had captions in the first place.
+    if had_captions:
+        # Original reel carried word-level captions → regenerate them from the
+        # target-language narration so they match the new audio.
+        try:
+            ed["captions"] = narration_to_captions(narration["path"], iso, transcribe=transcribe)
+        except Exception as e:
+            # Transcriber unavailable (e.g. faster-whisper not installed): ship the
+            # localized reel WITHOUT captions rather than hard-failing or keeping
+            # mistimed source-language captions.
+            print(f"caption regen skipped ({e}); dropping original captions")
+            ed.pop("captions", None)
+    # Reels rendered by the runner stop before the compose-time caption step, so
+    # they have no captions[] — nothing to regenerate; leave it absent to match the original.
 
     json.dump(ed, open(os.path.join(art, "edit_decisions.json"), "w"))
     json.dump(am, open(os.path.join(art, "asset_manifest.json"), "w"))
