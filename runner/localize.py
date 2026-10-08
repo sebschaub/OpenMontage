@@ -105,8 +105,10 @@ def translate_strings(strings, target_language, runner=subprocess.run):
         "preserve numbers, %, URLs, and brand/product names verbatim; natural, idiomatic phrasing.\n\n"
         + json.dumps(strings, ensure_ascii=False)
     )
+    # Pinned: the CLI's "haiku" alias follows the installed CLI version (2.1.285 still
+    # maps it to claude-haiku-4-5). Older CLIs warn "unrecognized_model" on stderr only.
     cmd = ["claude", "-p", prompt, "--permission-mode", "bypassPermissions",
-           "--model", "haiku", "--output-format", "json"]
+           "--model", "claude-haiku-5-5", "--output-format", "json"]
     proc = runner(cmd, capture_output=True, text=True, timeout=300)
     data = json.loads(proc.stdout or "{}")
     result = data.get("result", proc.stdout or "")

@@ -69,7 +69,7 @@ def test_translate_strings_parses_json_array():
         return _Proc(_json.dumps({"result": '["Hola","Mundo"]'}))
     out=localize.translate_strings(["Hi","World"], "es-ES", runner=fake_runner)
     assert out==["Hola","Mundo"]
-    assert "--model" in captured["cmd"] and "haiku" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--model")+1] == "claude-haiku-5-5"
 
 def test_translate_strings_wrong_count_raises():
     def fake_runner(cmd, **kw): return _Proc(_json.dumps({"result":'["only one"]'}))
